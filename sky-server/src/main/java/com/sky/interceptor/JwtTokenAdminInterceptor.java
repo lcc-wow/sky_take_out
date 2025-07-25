@@ -1,10 +1,12 @@
 package com.sky.interceptor;
 
 import com.sky.constant.JwtClaimsConstant;
+import com.sky.controller.admin.EmployeeController;
 import com.sky.properties.JwtProperties;
 import com.sky.utils.JwtUtil;
 import io.jsonwebtoken.Claims;
-import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.web.method.HandlerMethod;
@@ -16,8 +18,8 @@ import javax.servlet.http.HttpServletResponse;
  * jwt令牌校验的拦截器
  */
 @Component
-@Slf4j
 public class JwtTokenAdminInterceptor implements HandlerInterceptor {
+    final Logger log = LoggerFactory.getLogger(JwtTokenAdminInterceptor.class);
 
     @Autowired
     private JwtProperties jwtProperties;
