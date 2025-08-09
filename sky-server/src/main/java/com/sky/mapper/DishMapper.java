@@ -49,7 +49,7 @@ public interface DishMapper {
     void update(Dish dish);
 
     /**
-     * 根据id查询菜品和对应的口味数据
+     * 根据菜品id查询菜品和对应的口味数据
      * @param id
      * @return
      */
@@ -70,4 +70,18 @@ public interface DishMapper {
      */
     @Select("select * from dish where id = #{id}")
     Dish getByIdWithFlavor(Long id);
+
+    /**
+     * 根据分类id查询菜品选项
+     * @param dish
+     * @return
+     */
+    List<Dish> list(Dish dish);
+
+    /**
+     * 根据套餐id查询菜品选项
+     * @param id
+     * @return
+     */
+    List<Dish> getBySetmealId(Long id);
 }
