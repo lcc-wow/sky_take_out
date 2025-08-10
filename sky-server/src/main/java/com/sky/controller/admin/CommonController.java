@@ -15,6 +15,7 @@ import java.util.UUID;
 
 @RestController
 @RequestMapping("/admin/common")
+
 @Slf4j
 public class CommonController {
 
