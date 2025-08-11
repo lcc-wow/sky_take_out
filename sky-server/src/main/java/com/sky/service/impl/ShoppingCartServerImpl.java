@@ -92,4 +92,26 @@ public class ShoppingCartServerImpl implements ShoppingCartServer {
         Long currentId = BaseContext.getCurrentId();
         shoppingCartMapper.deleteByUserId(currentId);
     }
+
+    /**
+     * 删除购物车中物品
+     * @param shoppingCartDTO
+     */
+    public void sub(ShoppingCartDTO shoppingCartDTO) {
+
+        ShoppingCart shoppingCart=new ShoppingCart();
+        BeanUtils.copyProperties(shoppingCartDTO,shoppingCart);
+
+        Long userId = BaseContext.getCurrentId();
+        shoppingCart.setUserId(userId);
+
+        List<ShoppingCart> list = shoppingCartMapper.search(shoppingCart);
+        ShoppingCart cart = list.get(0);
+        if(cart.getNumber()==1){
+            shoppingCartMapper.deleteById(cart);
+        }else {
+            cart.setNumber(cart.getNumber() - 1);
+            shoppingCartMapper.updateNumberById(cart);
+        }
+    }
 }

@@ -50,4 +50,12 @@ public class ShoppingCartController {
         shoppingCartServer.clean();
         return Result.success();
     }
+
+    @PostMapping("/sub")
+    public Result sub(@RequestBody ShoppingCartDTO shoppingCartDTO) {
+        log.info("购物车数据:{}", shoppingCartDTO);
+        shoppingCartServer.sub(shoppingCartDTO);
+        return Result.success();
+    }
+
 }
