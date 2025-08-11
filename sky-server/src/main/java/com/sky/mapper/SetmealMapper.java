@@ -38,7 +38,7 @@ public interface SetmealMapper {
     Page<SetmealVO> page(SetmealPageQueryDTO setmealPageQueryDTO);
 
     /**
-     * 根据id查询套餐数据
+     * 根据套餐id查询套餐数据
      * @param id
      * @return
      */
