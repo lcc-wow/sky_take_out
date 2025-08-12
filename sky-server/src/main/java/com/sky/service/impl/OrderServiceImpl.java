@@ -1,25 +1,30 @@
 package com.sky.service.impl;
 
+import com.alibaba.fastjson.JSONObject;
+import com.github.pagehelper.Page;
+import com.github.pagehelper.PageHelper;
 import com.sky.constant.MessageConstant;
 import com.sky.context.BaseContext;
-import com.sky.dto.OrdersSubmitDTO;
-import com.sky.entity.AddressBook;
-import com.sky.entity.OrderDetail;
-import com.sky.entity.Orders;
-import com.sky.entity.ShoppingCart;
+import com.sky.dto.*;
+import com.sky.entity.*;
 import com.sky.exception.AddressBookBusinessException;
+import com.sky.exception.OrderBusinessException;
 import com.sky.exception.ShoppingCartBusinessException;
-import com.sky.mapper.AddressBookMapper;
-import com.sky.mapper.OrderDetailMapper;
-import com.sky.mapper.OrderMapper;
-import com.sky.mapper.ShoppingCartMapper;
+import com.sky.mapper.*;
+import com.sky.result.PageResult;
 import com.sky.service.OrderService;
+import com.sky.utils.WeChatPayUtil;
+import com.sky.vo.OrderPaymentVO;
+import com.sky.vo.OrderStatisticsVO;
 import com.sky.vo.OrderSubmitVO;
+import com.sky.vo.OrderVO;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -35,6 +40,10 @@ public class OrderServiceImpl implements OrderService {
     private AddressBookMapper addressBookMapper;
     @Autowired
     private ShoppingCartMapper shoppingCartMapper;
+    @Autowired
+    private UserMapper userMapper;
+    @Autowired
+    private WeChatPayUtil weChatPayUtil;
 
     /**
      * 用户下单
@@ -84,7 +93,7 @@ public class OrderServiceImpl implements OrderService {
         }
 
         //批量插入
-        orderDetailMapper.insert(ordersList);
+        orderDetailMapper.insertBatch(ordersList);
 
         //删除购物车数据
         shoppingCartMapper.deleteByUserId(userId);
@@ -98,4 +107,332 @@ public class OrderServiceImpl implements OrderService {
 
         return orderSubmitVO;
     }
+
+    /**
+     * 订单支付
+     *
+     * @param ordersPaymentDTO
+     * @return
+     */
+    public OrderPaymentVO payment(OrdersPaymentDTO ordersPaymentDTO) throws Exception {
+        // 当前登录用户id
+        Long userId = BaseContext.getCurrentId();
+        User user = userMapper.getById(userId);
+
+        //调用微信支付接口，生成预支付交易单
+        JSONObject jsonObject = weChatPayUtil.pay(
+                ordersPaymentDTO.getOrderNumber(), //商户订单号
+                new BigDecimal(0.01), //支付金额，单位 元
+                "苍穹外卖订单", //商品描述
+                user.getOpenid() //微信用户的openid
+        );
+
+        if (jsonObject.getString("code") != null && jsonObject.getString("code").equals("ORDERPAID")) {
+            throw new OrderBusinessException("该订单已支付");
+        }
+
+        OrderPaymentVO vo = jsonObject.toJavaObject(OrderPaymentVO.class);
+        vo.setPackageStr(jsonObject.getString("package"));
+
+        return vo;
+    }
+
+    /**
+     * 支付成功，修改订单状态
+     *
+     * @param outTradeNo
+     */
+    public void paySuccess(String outTradeNo) {
+
+        // 根据订单号查询订单
+        Orders ordersDB = orderMapper.getByNumber(outTradeNo);
+
+        // 根据订单id更新订单的状态、支付方式、支付状态、结账时间
+        Orders orders = Orders.builder()
+                .id(ordersDB.getId())
+                .status(Orders.TO_BE_CONFIRMED)
+                .payStatus(Orders.PAID)
+                .checkoutTime(LocalDateTime.now())
+                .build();
+
+        orderMapper.update(orders);
+    }
+
+    /**
+     * 历史订单查询
+     *
+     * @param ordersPageQueryDTO
+     * @return
+     */
+    public PageResult historyOrders(OrdersPageQueryDTO ordersPageQueryDTO) {
+        PageHelper.startPage(ordersPageQueryDTO.getPage(), ordersPageQueryDTO.getPageSize());
+
+        ordersPageQueryDTO.setUserId(BaseContext.getCurrentId());
+
+        Page<Orders> orders = orderMapper.queryOrders(ordersPageQueryDTO);
+
+        List<OrderVO> orderVOList = new ArrayList<>();
+        if (orders != null && !orders.isEmpty()) {
+            // 根据订单ID列表查询订单详情
+            for (Orders order : orders) {
+                OrderVO orderVO = new OrderVO();
+                BeanUtils.copyProperties(order, orderVO);
+                List<OrderDetail> orderDetailList = orderDetailMapper.queryById(order.getId());
+                orderVO.setOrderDetailList(orderDetailList);
+                orderVOList.add(orderVO);
+            }
+        }
+        return new PageResult(orders.getTotal(), orderVOList);
+    }
+
+    /**
+     * 订单详情
+     *
+     * @param id
+     * @return
+     */
+    public OrderVO show(Long id) {
+        List<OrderDetail> orderDetail = orderDetailMapper.queryById(id);
+        Orders orders = orderMapper.getById(id);
+        OrderVO orderVO = new OrderVO();
+        BeanUtils.copyProperties(orders, orderVO);
+        orderVO.setOrderDetailList(orderDetail);
+        return orderVO;
+    }
+
+    /**
+     * 用户端取消订单
+     *
+     * @param id
+     */
+    @Transactional
+    public void cancel(Long id) {
+        Orders order = orderMapper.getById(id);
+
+        if (order == null) {
+            throw new OrderBusinessException(MessageConstant.ORDER_NOT_FOUND);
+        }
+
+        Integer status = order.getStatus();
+        if (status == Orders.PENDING_PAYMENT || status == Orders.TO_BE_CONFIRMED) {
+            Orders orders = Orders.builder()
+                    .id(id)
+                    .status(Orders.CANCELLED)
+                    .cancelReason("用户取消")
+                    .cancelTime(LocalDateTime.now())
+                    .build();
+
+            if (status == Orders.TO_BE_CONFIRMED) {
+                orders.setPayStatus(Orders.REFUND);
+                try {
+                    //调用微信支付退款接口
+                    weChatPayUtil.refund(
+                            order.getNumber(), //商户订单号
+                            order.getNumber(), //商户退款单号
+                            new BigDecimal(0.01),//退款金额，单位 元
+                            new BigDecimal(0.01));//原订单金额
+                } catch (Exception e) {
+                    throw new OrderBusinessException("取消订单失败");
+                }
+            }
+            orderMapper.update(orders);
+
+        } else if (status == Orders.CONFIRMED || status == Orders.DELIVERY_IN_PROGRESS) {
+            throw new OrderBusinessException("订单暂时无法取消，如有需要请电话联系商家");
+        }
+
+
+    }
+
+    /**
+     * 再来一单(订单id)
+     *
+     * @param id
+     */
+    public void repetition(Long id) {
+        Long userId = BaseContext.getCurrentId();
+
+        ShoppingCart sc = ShoppingCart.builder()
+                .userId(userId)
+                .build();
+        List<ShoppingCart> scList = shoppingCartMapper.search(sc);
+
+        if (scList != null && !scList.isEmpty()) {
+            shoppingCartMapper.deleteByUserId(userId);
+        }
+
+        List<OrderDetail> orderDetailList = orderDetailMapper.queryById(id);
+        List<ShoppingCart> list = new ArrayList<>();
+        for (OrderDetail orderDetail : orderDetailList) {
+            ShoppingCart shoppingCart = new ShoppingCart();
+            BeanUtils.copyProperties(orderDetail, shoppingCart);
+            shoppingCart.setUserId(BaseContext.getCurrentId());
+            list.add(shoppingCart);
+        }
+        for (ShoppingCart cart : list) {
+            shoppingCartMapper.insert(cart);
+        }
+    }
+
+    /**
+     * 订单搜索
+     *
+     * @param ordersPageQueryDTO
+     * @return
+     */
+    @Transactional
+    public PageResult pageQuery(OrdersPageQueryDTO ordersPageQueryDTO) {
+        PageHelper.startPage(ordersPageQueryDTO.getPage(), ordersPageQueryDTO.getPageSize());
+        Page<Orders> page = orderMapper.pageQuery(ordersPageQueryDTO);
+
+        List<OrderVO> orderVOList = new ArrayList<>();
+        for (Orders orders : page) {
+            AddressBook addressBook = addressBookMapper.getById(orders.getAddressBookId());
+            orders.setAddress(addressBook.getProvinceName() + addressBook.getCityName() +
+                    addressBook.getDistrictName() + addressBook.getDetail());
+            OrderVO orderVO = new OrderVO();
+            BeanUtils.copyProperties(orders, orderVO);
+            orderVOList.add(orderVO);
+        }
+
+        return new PageResult(page.getTotal(), orderVOList);
+    }
+
+    /**
+     * 统计订单数据
+     *
+     * @return
+     */
+    public OrderStatisticsVO statistics() {
+        Integer toBeConfirmed = orderMapper.countStatus(Orders.TO_BE_CONFIRMED);
+        Integer confirmed = orderMapper.countStatus(Orders.CONFIRMED);
+        Integer deliveryInProgress = orderMapper.countStatus(Orders.DELIVERY_IN_PROGRESS);
+        OrderStatisticsVO orderStatisticsVO = new OrderStatisticsVO();
+        orderStatisticsVO.setToBeConfirmed(toBeConfirmed);
+        orderStatisticsVO.setConfirmed(confirmed);
+        orderStatisticsVO.setDeliveryInProgress(deliveryInProgress);
+        return orderStatisticsVO;
+    }
+
+    /**
+     * 接单
+     *
+     * @param ordersConfirmDTO
+     */
+    @Transactional
+    public void confirm(OrdersConfirmDTO ordersConfirmDTO) {
+        Long orderId = ordersConfirmDTO.getId();
+        Orders orders = Orders.builder()
+                .id(orderId)
+                .status(Orders.CONFIRMED)
+                .build();
+        orderMapper.update(orders);
+    }
+
+    /**
+     * 拒单
+     *
+     * @param ordersRejectionDTO
+     */
+    @Transactional
+    public void rejection(OrdersRejectionDTO ordersRejectionDTO) {
+
+        Long orderId = ordersRejectionDTO.getId();
+
+        Orders order = orderMapper.getById(orderId);
+
+        if (order == null || !order.getStatus().equals(Orders.TO_BE_CONFIRMED)) {
+            throw new OrderBusinessException(MessageConstant.ORDER_STATUS_ERROR);
+        }
+
+        order.setStatus(Orders.CANCELLED);
+        order.setRejectionReason(ordersRejectionDTO.getRejectionReason());
+        order.setCancelTime(LocalDateTime.now());
+
+
+        if (order.getPayStatus() == Orders.PAID) {
+            try {
+                //调用微信支付退款接口
+                weChatPayUtil.refund(
+                        order.getNumber(), //商户订单号
+                        order.getNumber(), //商户退款单号
+                        new BigDecimal(0.01),//退款金额，单位 元
+                        new BigDecimal(0.01));//原订单金额
+            } catch (Exception e) {
+                throw new OrderBusinessException("取消订单失败");
+            }
+            order.setPayStatus(Orders.REFUND);
+        }
+
+        orderMapper.update(order);
+    }
+
+    /**
+     * 管理端取消订单
+     *
+     * @param ordersCancelDTO
+     */
+    public void adminCancel(OrdersCancelDTO ordersCancelDTO) {
+        Long orderId = ordersCancelDTO.getId();
+
+        Orders order = orderMapper.getById(orderId);
+        Integer payStatus = order.getPayStatus();
+
+        if (payStatus == Orders.PAID) {
+            try {
+                //调用微信支付退款接口
+                weChatPayUtil.refund(
+                        order.getNumber(), //商户订单号
+                        order.getNumber(), //商户退款单号
+                        new BigDecimal(0.01),//退款金额，单位 元
+                        new BigDecimal(0.01));//原订单金额
+            } catch (Exception e) {
+                throw new OrderBusinessException("取消订单失败");
+            }
+            order.setPayStatus(Orders.REFUND);
+        }
+
+        order.setStatus(Orders.CANCELLED);
+        order.setCancelTime(LocalDateTime.now());
+        order.setCancelReason(ordersCancelDTO.getCancelReason());
+
+        orderMapper.update(order);
+    }
+
+    /**
+     * 派送订单
+     *
+     * @param id
+     */
+    public void delivery(Long id) {
+        Orders order = orderMapper.getById(id);
+
+        //判断订单状态
+        if (order == null || !order.getStatus().equals(Orders.CONFIRMED)) {
+            throw new OrderBusinessException(MessageConstant.ORDER_STATUS_ERROR);
+        }
+
+        order.setId(id);
+        order.setStatus(Orders.DELIVERY_IN_PROGRESS);
+
+        orderMapper.update(order);
+    }
+
+    /**
+     * 完成订单
+     *
+     * @param id
+     */
+    public void complete(Long id){
+        Orders order = orderMapper.getById(id);
+        if (order == null || !order.getStatus().equals(Orders.DELIVERY_IN_PROGRESS)) {
+            throw new OrderBusinessException(MessageConstant.ORDER_STATUS_ERROR);
+        }
+
+        order.setStatus(Orders.COMPLETED);
+        order.setDeliveryTime(LocalDateTime.now());
+
+        orderMapper.update(order);
+    }
+
 }

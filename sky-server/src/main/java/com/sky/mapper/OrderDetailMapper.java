@@ -1,5 +1,6 @@
 package com.sky.mapper;
 
+
 import com.sky.entity.OrderDetail;
 import org.apache.ibatis.annotations.Mapper;
 
@@ -11,5 +12,12 @@ public interface OrderDetailMapper {
      * 批量插入订单明细数据
      * @param orderDetail
      */
-    void insert(List<OrderDetail> orderDetail);
+    void insertBatch(List<OrderDetail> orderDetail);
+
+    /**
+     * 根据订单id查询订单明细
+     * @param id
+     * @return
+     */
+    List<OrderDetail> queryById(Long id);
 }
