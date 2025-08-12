@@ -74,11 +74,24 @@
         </where>
         order by update_time desc
     </select>
+
     <select id="getBySetmealId" resultType="com.sky.entity.Dish">
         select d.* from dish d
         left join setmeal_dish sd
         on d.id = sd.dish_id
         where sd.setmeal_id = #{setmealId}
+    </select>
+
+    <select id="countByMap" resultType="java.lang.Integer">
+        select count(id) from dish
+        <where>
+            <if test="status != null">
+                and status = #{status}
+            </if>
+            <if test="categoryId != null">
+                and category_id = #{categoryId}
+            </if>
+        </where>
     </select>
 
 
